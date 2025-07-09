@@ -36,6 +36,8 @@ interface Boss {
   isActive: boolean
   state: 'attacking' | 'fleeing' | 'returning'
   fleeTimer: number
+  flashing: boolean
+  flashingTimer: number
 }
 
 function App() {
@@ -201,6 +203,8 @@ function App() {
         isActive: true,
         state: 'attacking',
         fleeTimer: 0,
+        flashing: false,
+        flashingTimer: 0,
       })
       return
     }
@@ -209,14 +213,19 @@ function App() {
       // Boss AI
       setBoss(prev => {
         if (!prev) return prev
-        let { x, y, direction, state, fleeTimer } = prev
-
+        let { x, y, direction, state, fleeTimer, flashing, flashingTimer } = prev
         const speed = 4
         const fleeSpeed = 12
-
+        // Handle flashing timer
+        if (flashing) {
+          flashingTimer--
+          if (flashingTimer <= 0) {
+            flashing = false
+            flashingTimer = 0
+          }
+        }
         switch (state) {
           case 'attacking':
-            // Move towards the player
             if (x + prev.width / 2 < player.x + player.width / 2) {
               direction = 1
             } else {
@@ -224,35 +233,28 @@ function App() {
             }
             x += direction * speed
             break
-
           case 'fleeing':
-            // Run away to the right
             x += fleeSpeed
             fleeTimer--
             if (fleeTimer <= 0) {
               state = 'returning'
             }
             break
-
           case 'returning':
-            // Come back from the right
             x -= speed
             if (x <= CANVAS_WIDTH - 200) {
               state = 'attacking'
             }
             break
         }
-
-        return { ...prev, x, direction, state, fleeTimer }
+        return { ...prev, x, direction, state, fleeTimer, flashing, flashingTimer }
       })
-
       // Player physics
       setPlayer(prev => {
         const newPlayer = { ...prev }
         newPlayer.velocityY += GRAVITY
         newPlayer.y += newPlayer.velocityY
         newPlayer.rotation += 8
-        // Ground collision
         if (newPlayer.y + newPlayer.height >= 370) {
           newPlayer.y = 370 - newPlayer.height
           newPlayer.velocityY = 0
@@ -260,25 +262,23 @@ function App() {
         } else {
           newPlayer.isGrounded = false
         }
-        // Ceiling
         if (newPlayer.y <= 0) {
           newPlayer.y = 0
           newPlayer.velocityY = 0
         }
         return newPlayer
       })
-      // Camera stays fixed during boss fight
       setCameraX(0)
-
       // Boss collision
       if (boss) {
         const playerRect = { x: player.x, y: player.y, width: player.width, height: player.height }
         const bossRect = { x: boss.x, y: boss.y, width: boss.width, height: boss.height }
-
+        // Jump on boss (from above)
         if (
           checkCollision(playerRect, bossRect) &&
           player.velocityY > 0 &&
-          player.y + player.height - boss.y < 20 // Hit top
+          player.y + player.height - boss.y < 20 &&
+          !boss.flashing
         ) {
           setBoss(prev => {
             if (!prev) return prev
@@ -286,11 +286,12 @@ function App() {
               ...prev,
               health: prev.health - 1,
               state: 'fleeing',
-              fleeTimer: 120, // Flee for 2 seconds (60fps * 2)
+              fleeTimer: 120,
+              flashing: true,
+              flashingTimer: 90, // 1.5 seconds at 60fps
             }
           })
           setPlayer(p => ({ ...p, velocityY: JUMP_POWER }))
-          // Add hit particles
           setParticles(prev => [
             ...prev,
             ...Array.from({ length: 10 }, () => ({
@@ -303,18 +304,22 @@ function App() {
             }))
           ])
         }
-        // If player hits boss from side or bottom, game over
-        else if (checkCollision(playerRect, bossRect) && boss.state === 'attacking') {
+        // Boss can only kill from the side, not from above, and only if not flashing
+        else if (
+          checkCollision(playerRect, bossRect) &&
+          !boss.flashing &&
+          boss.state === 'attacking' &&
+          // Player is not above boss (side collision)
+          !(player.y + player.height - boss.y < 20 && player.velocityY > 0)
+        ) {
           setGameState('gameOver')
         }
       }
-
       // Boss defeated
       if (boss && boss.health <= 0) {
         setBoss(prev => prev ? { ...prev, isActive: false } : prev)
         setGameState('victory')
       }
-      // Update particles
       setParticles(prev => 
         prev.map(p => ({
           ...p,
@@ -460,11 +465,16 @@ function App() {
     // Draw boss (if active)
     if (gameState === 'bossFight' && boss) {
       ctx.save()
+      // Flashing effect: alternate opacity
+      if (boss.flashing && Math.floor(performance.now() / 100) % 2 === 0) {
+        ctx.globalAlpha = 0.4
+      }
       ctx.shadowColor = boss.color
       ctx.shadowBlur = 30
       ctx.fillStyle = boss.color
       ctx.fillRect(boss.x, boss.y, boss.width, boss.height)
       ctx.shadowBlur = 0
+      ctx.globalAlpha = 1
       ctx.restore()
       // Boss face
       ctx.save()
