@@ -24,10 +24,22 @@ interface Player {
   color: string
 }
 
+interface Boss {
+  x: number
+  y: number
+  width: number
+  height: number
+  health: number
+  maxHealth: number
+  direction: number
+  color: string
+  isActive: boolean
+}
+
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gameLoopRef = useRef<number>()
-  const [gameState, setGameState] = useState<'menu' | 'playing' | 'paused' | 'gameOver'>('menu')
+  const [gameState, setGameState] = useState<'menu' | 'playing' | 'paused' | 'gameOver' | 'bossFight' | 'victory'>('menu')
   const [score, setScore] = useState(0)
   const [bestScore, setBestScore] = useState(0)
   const [muted, setMuted] = useState(false)
@@ -56,6 +68,10 @@ function App() {
   const [objects, setObjects] = useState<GameObject[]>([])
   const [cameraX, setCameraX] = useState(0)
   const [particles, setParticles] = useState<Array<{x: number, y: number, vx: number, vy: number, life: number, color: string}>>([])
+
+  // Boss state
+  const [boss, setBoss] = useState<Boss | null>(null)
+  const bossFightTriggered = useRef(false)
 
   // Generate level obstacles
   const generateObstacles = useCallback((startX: number, count: number) => {
@@ -127,11 +143,13 @@ function App() {
     setCameraX(0)
     setScore(0)
     setParticles([])
+    setBoss(null)
+    bossFightTriggered.current = false
   }, [generateObstacles])
 
   // Jump function
   const jump = useCallback(() => {
-    if (gameState === 'playing') {
+    if (gameState === 'playing' || gameState === 'bossFight') {
       setPlayer(prev => ({
         ...prev,
         velocityY: JUMP_POWER,
@@ -163,18 +181,119 @@ function App() {
 
   // Game loop
   const gameLoop = useCallback(() => {
-    if (gameState !== 'playing') return
+    if (gameState !== 'playing' && gameState !== 'bossFight') return
 
+    // Boss fight trigger
+    if (!bossFightTriggered.current && score >= 500) {
+      bossFightTriggered.current = true
+      setGameState('bossFight')
+      setBoss({
+        x: 600,
+        y: 250,
+        width: 80,
+        height: 80,
+        health: 10,
+        maxHealth: 10,
+        direction: 1,
+        color: '#ff0055',
+        isActive: true
+      })
+      return
+    }
+
+    if (gameState === 'bossFight' && boss && boss.isActive) {
+      // Boss movement (bounces left/right)
+      setBoss(prev => {
+        if (!prev) return prev
+        let newX = prev.x + prev.direction * 4
+        let newDir = prev.direction
+        if (newX < 500) {
+          newX = 500
+          newDir = 1
+        } else if (newX + prev.width > CANVAS_WIDTH - 40) {
+          newX = CANVAS_WIDTH - 40 - prev.width
+          newDir = -1
+        }
+        return { ...prev, x: newX, direction: newDir }
+      })
+      // Player physics
+      setPlayer(prev => {
+        const newPlayer = { ...prev }
+        newPlayer.velocityY += GRAVITY
+        newPlayer.y += newPlayer.velocityY
+        newPlayer.rotation += 8
+        // Ground collision
+        if (newPlayer.y + newPlayer.height >= 370) {
+          newPlayer.y = 370 - newPlayer.height
+          newPlayer.velocityY = 0
+          newPlayer.isGrounded = true
+        } else {
+          newPlayer.isGrounded = false
+        }
+        // Ceiling
+        if (newPlayer.y <= 0) {
+          newPlayer.y = 0
+          newPlayer.velocityY = 0
+        }
+        return newPlayer
+      })
+      // Camera stays fixed on boss fight
+      setCameraX(500)
+      // Boss collision (player must hit top of boss)
+      if (boss) {
+        const playerRect = { x: player.x, y: player.y, width: player.width, height: player.height }
+        const bossRect = { x: boss.x, y: boss.y, width: boss.width, height: boss.height }
+        if (
+          checkCollision(playerRect, bossRect) &&
+          player.velocityY > 0 &&
+          player.y + player.height - boss.y < 20 // Only if hitting top
+        ) {
+          setBoss(prev => prev ? { ...prev, health: prev.health - 1 } : prev)
+          setPlayer(p => ({ ...p, velocityY: JUMP_POWER }))
+          // Add hit particles
+          setParticles(prev => [
+            ...prev,
+            ...Array.from({ length: 10 }, () => ({
+              x: boss.x + boss.width / 2,
+              y: boss.y,
+              vx: (Math.random() - 0.5) * 6,
+              vy: Math.random() * -4,
+              life: 30,
+              color: '#ff0055'
+            }))
+          ])
+        }
+        // If player hits boss from side or bottom, game over
+        else if (checkCollision(playerRect, bossRect)) {
+          setGameState('gameOver')
+        }
+      }
+      // Boss defeated
+      if (boss && boss.health <= 0) {
+        setBoss(prev => prev ? { ...prev, isActive: false } : prev)
+        setGameState('victory')
+      }
+      // Update particles
+      setParticles(prev => 
+        prev.map(p => ({
+          ...p,
+          x: p.x + p.vx,
+          y: p.y + p.vy,
+          vy: p.vy + 0.2,
+          life: p.life - 1
+        })).filter(p => p.life > 0)
+      )
+      return
+    }
+
+    // Normal gameplay
     setPlayer(prev => {
       const newPlayer = { ...prev }
-      
       // Apply gravity
       newPlayer.velocityY += GRAVITY
       newPlayer.y += newPlayer.velocityY
-      
       // Rotate player
       newPlayer.rotation += 8
-      
       // Check ground collision
       if (newPlayer.y + newPlayer.height >= 370) {
         newPlayer.y = 370 - newPlayer.height
@@ -183,29 +302,22 @@ function App() {
       } else {
         newPlayer.isGrounded = false
       }
-      
       // Check ceiling collision
       if (newPlayer.y <= 0) {
         newPlayer.y = 0
         newPlayer.velocityY = 0
       }
-      
       return newPlayer
     })
-
     // Move camera
     setCameraX(prev => prev + GAME_SPEED)
-    
     // Update score
     setScore(prev => prev + 1)
-    
     // Check object collisions
     setObjects(prev => {
       const playerRect = { x: player.x, y: player.y, width: player.width, height: player.height }
-      
       for (const obj of prev) {
         const objRect = { x: obj.x - cameraX, y: obj.y, width: obj.width, height: obj.height }
-        
         if (checkCollision(playerRect, objRect)) {
           if (obj.type === 'spike') {
             setGameState('gameOver')
@@ -221,10 +333,8 @@ function App() {
           }
         }
       }
-      
       return prev
     })
-
     // Update particles
     setParticles(prev => 
       prev.map(p => ({
@@ -235,28 +345,24 @@ function App() {
         life: p.life - 1
       })).filter(p => p.life > 0)
     )
-
     // Generate more obstacles
     if (cameraX > objects[objects.length - 1]?.x - 1000) {
       setObjects(prev => [...prev, ...generateObstacles(prev[prev.length - 1].x + 200, 20)])
     }
-  }, [gameState, player, cameraX, objects, checkCollision, generateObstacles])
+  }, [gameState, player, cameraX, objects, checkCollision, generateObstacles, score, boss])
 
   // Render game
   const render = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    
     // Clear canvas with gradient background
     const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT)
     gradient.addColorStop(0, '#1a1a2e')
     gradient.addColorStop(1, '#16213e')
     ctx.fillStyle = gradient
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
-    
     // Draw grid background
     ctx.strokeStyle = '#333'
     ctx.lineWidth = 1
@@ -272,52 +378,86 @@ function App() {
       ctx.lineTo(CANVAS_WIDTH, i)
       ctx.stroke()
     }
-    
     // Draw ground
     ctx.fillStyle = '#333'
     ctx.fillRect(0, 370, CANVAS_WIDTH, 30)
-    
-    // Draw objects
-    objects.forEach(obj => {
-      const x = obj.x - cameraX
-      if (x > -obj.width && x < CANVAS_WIDTH) {
-        ctx.fillStyle = obj.color || '#666'
-        
-        if (obj.type === 'spike') {
-          // Draw triangle spike
-          ctx.beginPath()
-          ctx.moveTo(x + obj.width / 2, obj.y)
-          ctx.lineTo(x, obj.y + obj.height)
-          ctx.lineTo(x + obj.width, obj.y + obj.height)
-          ctx.closePath()
-          ctx.fill()
-        } else if (obj.type === 'orb') {
-          // Draw glowing orb
-          ctx.shadowColor = obj.color
-          ctx.shadowBlur = 20
-          ctx.beginPath()
-          ctx.arc(x + obj.width / 2, obj.y + obj.height / 2, obj.width / 2, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.shadowBlur = 0
-        } else if (obj.type === 'portal') {
-          // Draw portal effect
-          ctx.shadowColor = obj.color
-          ctx.shadowBlur = 30
-          ctx.fillRect(x, obj.y, obj.width, obj.height)
-          ctx.shadowBlur = 0
-        } else {
-          // Draw regular rectangle
-          ctx.fillRect(x, obj.y, obj.width, obj.height)
+    // Draw objects (skip during boss fight)
+    if (gameState !== 'bossFight') {
+      objects.forEach(obj => {
+        const x = obj.x - cameraX
+        if (x > -obj.width && x < CANVAS_WIDTH) {
+          ctx.fillStyle = obj.color || '#666'
+          if (obj.type === 'spike') {
+            // Draw triangle spike
+            ctx.beginPath()
+            ctx.moveTo(x + obj.width / 2, obj.y)
+            ctx.lineTo(x, obj.y + obj.height)
+            ctx.lineTo(x + obj.width, obj.y + obj.height)
+            ctx.closePath()
+            ctx.fill()
+          } else if (obj.type === 'orb') {
+            // Draw glowing orb
+            ctx.shadowColor = obj.color
+            ctx.shadowBlur = 20
+            ctx.beginPath()
+            ctx.arc(x + obj.width / 2, obj.y + obj.height / 2, obj.width / 2, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.shadowBlur = 0
+          } else if (obj.type === 'portal') {
+            // Draw portal effect
+            ctx.shadowColor = obj.color
+            ctx.shadowBlur = 30
+            ctx.fillRect(x, obj.y, obj.width, obj.height)
+            ctx.shadowBlur = 0
+          } else {
+            // Draw regular rectangle
+            ctx.fillRect(x, obj.y, obj.width, obj.height)
+          }
         }
-      }
-    })
-    
+      })
+    }
+    // Draw boss (if active)
+    if (gameState === 'bossFight' && boss) {
+      ctx.save()
+      ctx.shadowColor = boss.color
+      ctx.shadowBlur = 30
+      ctx.fillStyle = boss.color
+      ctx.fillRect(boss.x, boss.y, boss.width, boss.height)
+      ctx.shadowBlur = 0
+      ctx.restore()
+      // Boss face
+      ctx.save()
+      ctx.fillStyle = '#fff'
+      ctx.beginPath()
+      ctx.arc(boss.x + boss.width/2 - 15, boss.y + boss.height/2 - 10, 8, 0, Math.PI * 2)
+      ctx.arc(boss.x + boss.width/2 + 15, boss.y + boss.height/2 - 10, 8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#000'
+      ctx.beginPath()
+      ctx.arc(boss.x + boss.width/2 - 15, boss.y + boss.height/2 - 10, 3, 0, Math.PI * 2)
+      ctx.arc(boss.x + boss.width/2 + 15, boss.y + boss.height/2 - 10, 3, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.restore()
+      // Boss health bar
+      ctx.save()
+      ctx.fillStyle = '#222'
+      ctx.fillRect(250, 30, 300, 20)
+      ctx.fillStyle = '#ff0055'
+      ctx.fillRect(250, 30, 300 * (boss.health / boss.maxHealth), 20)
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.strokeRect(250, 30, 300, 20)
+      ctx.font = 'bold 16px sans-serif'
+      ctx.fillStyle = '#fff'
+      ctx.textAlign = 'center'
+      ctx.fillText(`Boss Health: ${boss.health} / ${boss.maxHealth}`, 400, 45)
+      ctx.restore()
+    }
     // Draw particles
     particles.forEach(p => {
       ctx.fillStyle = p.color + Math.floor(p.life * 255 / 30).toString(16).padStart(2, '0')
       ctx.fillRect(p.x - cameraX, p.y, 3, 3)
     })
-    
     // Draw player
     ctx.save()
     ctx.translate(player.x + player.width / 2, player.y + player.height / 2)
@@ -328,18 +468,19 @@ function App() {
     ctx.fillRect(-player.width / 2, -player.height / 2, player.width, player.height)
     ctx.shadowBlur = 0
     ctx.restore()
-    
     // Draw speed lines
-    ctx.strokeStyle = '#ffffff20'
-    ctx.lineWidth = 2
-    for (let i = 0; i < 10; i++) {
-      const x = (cameraX * 0.5 + i * 80) % CANVAS_WIDTH
-      ctx.beginPath()
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x - 40, CANVAS_HEIGHT)
-      ctx.stroke()
+    if (gameState !== 'bossFight') {
+      ctx.strokeStyle = '#ffffff20'
+      ctx.lineWidth = 2
+      for (let i = 0; i < 10; i++) {
+        const x = (cameraX * 0.5 + i * 80) % CANVAS_WIDTH
+        ctx.beginPath()
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x - 40, CANVAS_HEIGHT)
+        ctx.stroke()
+      }
     }
-  }, [player, objects, cameraX, particles])
+  }, [player, objects, cameraX, particles, boss, gameState])
 
   // Handle input
   useEffect(() => {
@@ -349,12 +490,9 @@ function App() {
         jump()
       }
     }
-    
     const handleClick = () => jump()
-    
     window.addEventListener('keydown', handleKeyPress)
     window.addEventListener('click', handleClick)
-    
     return () => {
       window.removeEventListener('keydown', handleKeyPress)
       window.removeEventListener('click', handleClick)
@@ -363,14 +501,13 @@ function App() {
 
   // Game loop effect
   useEffect(() => {
-    if (gameState === 'playing') {
+    if (gameState === 'playing' || gameState === 'bossFight') {
       gameLoopRef.current = requestAnimationFrame(function loop() {
         gameLoop()
         render()
         gameLoopRef.current = requestAnimationFrame(loop)
       })
     }
-    
     return () => {
       if (gameLoopRef.current) {
         cancelAnimationFrame(gameLoopRef.current)
@@ -405,6 +542,12 @@ function App() {
 
   const backToMenu = () => {
     setGameState('menu')
+  }
+
+  const continueAfterBoss = () => {
+    // Option: resume normal play or restart
+    initGame()
+    setGameState('playing')
   }
 
   return (
@@ -442,7 +585,6 @@ function App() {
               height={CANVAS_HEIGHT}
               className="border border-slate-600 rounded-lg bg-slate-900 mx-auto block"
             />
-            
             {/* Game overlays */}
             {gameState === 'menu' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-lg">
@@ -459,7 +601,6 @@ function App() {
                 </div>
               </div>
             )}
-            
             {gameState === 'paused' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-lg">
                 <div className="text-center">
@@ -475,7 +616,6 @@ function App() {
                 </div>
               </div>
             )}
-            
             {gameState === 'gameOver' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-lg">
                 <div className="text-center">
@@ -490,6 +630,25 @@ function App() {
                       Menu
                     </Button>
                   </div>
+                </div>
+              </div>
+            )}
+            {gameState === 'bossFight' && boss && boss.isActive && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-40 rounded-lg">
+                <div className="text-center">
+                  <h2 className="text-3xl font-bold text-pink-400 mb-4 animate-bounce">Boss Fight!</h2>
+                  <p className="text-gray-200 mb-2">Jump on the boss to defeat it!</p>
+                </div>
+              </div>
+            )}
+            {gameState === 'victory' && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 rounded-lg">
+                <div className="text-center">
+                  <h2 className="text-4xl font-bold text-green-400 mb-4 animate-pulse">Victory!</h2>
+                  <p className="text-gray-200 mb-4">You defeated the boss!</p>
+                  <Button onClick={continueAfterBoss} size="lg" className="bg-blue-600 hover:bg-blue-700">
+                    Continue
+                  </Button>
                 </div>
               </div>
             )}
