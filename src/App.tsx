@@ -47,15 +47,18 @@ function App() {
   const [score, setScore] = useState(0)
   const [bestScore, setBestScore] = useState(0)
   const [muted, setMuted] = useState(false)
-  // const [level, setLevel] = useState(1)
-  
+  // Player health
+  const [playerHealth, setPlayerHealth] = useState(7)
+  const [playerInvuln, setPlayerInvuln] = useState(false)
+  const playerInvulnTimer = useRef(0)
+
   // Game settings
   const GRAVITY = 0.6
   const JUMP_POWER = -12
   const GAME_SPEED = 4
   const CANVAS_WIDTH = 800
   const CANVAS_HEIGHT = 400
-  
+
   // Player state
   const [player, setPlayer] = useState<Player>({
     x: 100,
@@ -149,6 +152,9 @@ function App() {
     setParticles([])
     setBoss(null)
     bossFightTriggered.current = false
+    setPlayerHealth(7)
+    setPlayerInvuln(false)
+    playerInvulnTimer.current = 0
   }, [generateObstacles])
 
   // Jump function
@@ -210,6 +216,13 @@ function App() {
     }
 
     if (gameState === 'bossFight' && boss && boss.isActive) {
+      // Player invulnerability timer
+      if (playerInvuln) {
+        playerInvulnTimer.current--
+        if (playerInvulnTimer.current <= 0) {
+          setPlayerInvuln(false)
+        }
+      }
       // Boss AI
       setBoss(prev => {
         if (!prev) return prev
@@ -304,15 +317,25 @@ function App() {
             }))
           ])
         }
-        // Boss can only kill from the side or bottom, never from the top, and only if not flashing
+        // Boss can only hurt player from the side/bottom, never from the top, and only if not flashing and player not invulnerable
         else if (
           checkCollision(playerRect, bossRect) &&
           !boss.flashing &&
           boss.state === 'attacking' &&
+          !playerInvuln &&
           // Player is NOT above boss (side/bottom collision)
           !(player.y + player.height - boss.y < 20 && player.velocityY > 0)
         ) {
-          setGameState('gameOver')
+          setPlayerHealth(h => {
+            if (h > 1) {
+              setPlayerInvuln(true)
+              playerInvulnTimer.current = 60 // 1 second invuln
+              return h - 1
+            } else {
+              setGameState('gameOver')
+              return 0
+            }
+          })
         }
       }
       // Boss defeated
@@ -617,6 +640,15 @@ function App() {
               <Badge variant="outline" className="text-lg px-4 py-2">
                 Best: {bestScore}
               </Badge>
+              <div className="flex items-center gap-1">
+                {Array.from({ length: 7 }).map((_, i) => (
+                  <span
+                    key={i}
+                    className={`inline-block w-5 h-5 rounded-full border-2 ${i < playerHealth ? 'bg-pink-400 border-pink-500' : 'bg-slate-700 border-slate-500'} ${playerInvuln ? 'animate-pulse' : ''}`}
+                    title="Health"
+                  />
+                ))}
+              </div>
               <Button
                 variant="ghost"
                 size="icon"
