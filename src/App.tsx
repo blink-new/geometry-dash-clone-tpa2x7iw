@@ -304,12 +304,12 @@ function App() {
             }))
           ])
         }
-        // Boss can only kill from the side, not from above, and only if not flashing
+        // Boss can only kill from the side or bottom, never from the top, and only if not flashing
         else if (
           checkCollision(playerRect, bossRect) &&
           !boss.flashing &&
           boss.state === 'attacking' &&
-          // Player is not above boss (side collision)
+          // Player is NOT above boss (side/bottom collision)
           !(player.y + player.height - boss.y < 20 && player.velocityY > 0)
         ) {
           setGameState('gameOver')
