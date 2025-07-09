@@ -34,6 +34,8 @@ interface Boss {
   direction: number
   color: string
   isActive: boolean
+  state: 'attacking' | 'fleeing' | 'returning'
+  fleeTimer: number
 }
 
 function App() {
@@ -188,34 +190,62 @@ function App() {
       bossFightTriggered.current = true
       setGameState('bossFight')
       setBoss({
-        x: 600,
+        x: CANVAS_WIDTH, // Start off-screen
         y: 250,
         width: 80,
         height: 80,
         health: 10,
         maxHealth: 10,
-        direction: 1,
+        direction: -1,
         color: '#ff0055',
-        isActive: true
+        isActive: true,
+        state: 'attacking',
+        fleeTimer: 0,
       })
       return
     }
 
     if (gameState === 'bossFight' && boss && boss.isActive) {
-      // Boss movement (bounces left/right)
+      // Boss AI
       setBoss(prev => {
         if (!prev) return prev
-        let newX = prev.x + prev.direction * 4
-        let newDir = prev.direction
-        if (newX < 500) {
-          newX = 500
-          newDir = 1
-        } else if (newX + prev.width > CANVAS_WIDTH - 40) {
-          newX = CANVAS_WIDTH - 40 - prev.width
-          newDir = -1
+        let { x, y, direction, state, fleeTimer } = prev
+
+        const speed = 4
+        const fleeSpeed = 12
+
+        switch (state) {
+          case 'attacking':
+            // Move towards the player
+            if (x + prev.width / 2 < player.x + player.width / 2) {
+              direction = 1
+            } else {
+              direction = -1
+            }
+            x += direction * speed
+            break
+
+          case 'fleeing':
+            // Run away to the right
+            x += fleeSpeed
+            fleeTimer--
+            if (fleeTimer <= 0) {
+              state = 'returning'
+            }
+            break
+
+          case 'returning':
+            // Come back from the right
+            x -= speed
+            if (x <= CANVAS_WIDTH - 200) {
+              state = 'attacking'
+            }
+            break
         }
-        return { ...prev, x: newX, direction: newDir }
+
+        return { ...prev, x, direction, state, fleeTimer }
       })
+
       // Player physics
       setPlayer(prev => {
         const newPlayer = { ...prev }
@@ -237,18 +267,28 @@ function App() {
         }
         return newPlayer
       })
-      // Camera stays fixed on boss fight
-      setCameraX(500)
-      // Boss collision (player must hit top of boss)
+      // Camera stays fixed during boss fight
+      setCameraX(0)
+
+      // Boss collision
       if (boss) {
         const playerRect = { x: player.x, y: player.y, width: player.width, height: player.height }
         const bossRect = { x: boss.x, y: boss.y, width: boss.width, height: boss.height }
+
         if (
           checkCollision(playerRect, bossRect) &&
           player.velocityY > 0 &&
-          player.y + player.height - boss.y < 20 // Only if hitting top
+          player.y + player.height - boss.y < 20 // Hit top
         ) {
-          setBoss(prev => prev ? { ...prev, health: prev.health - 1 } : prev)
+          setBoss(prev => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              health: prev.health - 1,
+              state: 'fleeing',
+              fleeTimer: 120, // Flee for 2 seconds (60fps * 2)
+            }
+          })
           setPlayer(p => ({ ...p, velocityY: JUMP_POWER }))
           // Add hit particles
           setParticles(prev => [
@@ -264,10 +304,11 @@ function App() {
           ])
         }
         // If player hits boss from side or bottom, game over
-        else if (checkCollision(playerRect, bossRect)) {
+        else if (checkCollision(playerRect, bossRect) && boss.state === 'attacking') {
           setGameState('gameOver')
         }
       }
+
       // Boss defeated
       if (boss && boss.health <= 0) {
         setBoss(prev => prev ? { ...prev, isActive: false } : prev)
